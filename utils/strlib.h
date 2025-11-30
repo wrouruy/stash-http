@@ -44,3 +44,27 @@ void urldecode(char *dst, const char *src) {
         start[--len] = '\0';
     }
 }
+
+char* strbefore(char* input, char c)
+{
+    char* res = malloc(512);
+
+    for(int i = 0; i < strlen(input); i++){
+        if(input[i] == c)
+            break;
+        res[i] = input[i];
+    }
+
+    return res;
+}
+
+void rmlastspaces(char* input)
+{
+    int len = strlen(input);
+
+    for (int i = len - 1; i >= 0; i--) {
+        if (input[i] != ' ')
+            break;
+        input[i] = '\0';
+    }
+}

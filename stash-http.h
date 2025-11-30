@@ -11,14 +11,17 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <stdarg.h>
+#include <sys/time.h>
+#include <pthread.h>
 
 typedef struct
 {
-    char* path;
-    char* conn;
-    char* queries;
-    int   client_fd;
-    char* client_ip;
+    int   client_fd, times;
+    char *path, *conn, *queries, *client_ip, *body;
+
+    char headers[2048];
+    size_t headers_len;
 } HTTPreq;
 
 typedef struct HTTP HTTP; // forward declaration
@@ -38,6 +41,7 @@ typedef struct HTTP
 #include "utils/file.h"
 #include "query.h"
 #include "params.h"
+#include "dotenv.h"
 
 void init_server(HTTP* server)
 {
@@ -66,23 +70,55 @@ void init_server(HTTP* server)
     }
 }
 
-void send_response(HTTPreq* req, char* type, char* content, short status)
+void send_header(HTTPreq* req, const char* key, const char* value)
 {
-    signal(SIGPIPE, SIG_IGN);
-    size_t clen = strlen(content);
-    size_t hlen = 256 + clen + strlen(req->conn);
-    char* header = malloc(hlen);
-    snprintf(header, hlen,
-             "HTTP/1.1 %d OK\r\n"
-             "Content-type: %s; charset=utf-8\r\n"
-             "Content-Length: %d\r\n"
-             "Connection: %s\r\n"
-             "\r\n", status, type, clen, req->conn);
+    if (req->headers_len >= sizeof(req->headers) - 4)
+        return;
 
-    write(req->client_fd, header, strlen(header));
-    write(req->client_fd, content, clen);
+    int written = snprintf(
+        req->headers + req->headers_len,
+        sizeof(req->headers) - req->headers_len,
+        "%s: %s\r\n",
+        key, value
+    );
 
-    free(header);
+    if (written > 0)
+        req->headers_len += written;
+}
+
+void send_response(HTTPreq* req, const char* body, size_t len, int status)
+{
+    // send status
+    dprintf(req->client_fd, "HTTP/1.1 %d OK\r\n", status);
+
+    // send headers
+    write(req->client_fd, req->headers, req->headers_len);
+
+    // write to req->client_fd empty line
+    write(req->client_fd, "\r\n", 2);
+
+    // Send body
+    write(req->client_fd, body, len);
+
+    // for agains using
+    req->headers_len = 0;
+}
+
+
+void printf_response(HTTPreq* req, short status, char* content, ...)
+{
+    va_list args;
+    int written_chars;
+    char* buffer = malloc(2048);
+    size_t buffer_size = 2048;
+
+    va_start(args, content);
+    written_chars = vsnprintf(buffer, buffer_size, content, args);
+    va_end(args);
+
+    send_response(req, buffer, 2048, status);
+
+    free(buffer);
 }
 
 void server_listen(HTTP* server)
@@ -93,13 +129,17 @@ void server_listen(HTTP* server)
     while (true) {
         client_fd = accept(server->fd, (struct sockaddr*)&client_addr, &client_len);
 
-        if (client_fd < 0) {
-            perror("accept");
+        if (client_fd < 0)
             continue;
-        }
 
-        handle_client(server, client_fd, client_addr);
-        close(client_fd);
+        ClientArgs* args = malloc(sizeof(ClientArgs));
+        args->server = server;
+        args->client_fd = client_fd;
+        args->client_addr = client_addr;
+
+        pthread_t tid;
+        pthread_create(&tid, NULL, thread_func, args);
+        pthread_detach(tid);
     }
     close(server->fd);
 }
